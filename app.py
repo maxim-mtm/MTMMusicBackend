@@ -23,7 +23,13 @@ def fetch_deezer_metadata(track_title):
             cover_url = track['album']['cover_big']
             return artist, album, cover_url
     return None, None, None
+import shutil
+
 def download_audio_from_youtube(url, download_path):
+    # Copy cookies.txt to a temp path because /etc/secrets is read-only
+    temp_cookies_path = os.path.join(tempfile.gettempdir(), "cookies.txt")
+    shutil.copy("/etc/secrets/cookies.txt", temp_cookies_path)
+
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': download_path,
@@ -34,7 +40,7 @@ def download_audio_from_youtube(url, download_path):
         }],
         'quiet': True,
         'no_warnings': True,
-        'cookiefile': '/etc/secrets/cookies.txt' 
+        'cookiefile': temp_cookies_path  # ✅ use copied path
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -42,7 +48,7 @@ def download_audio_from_youtube(url, download_path):
         filename = ydl.prepare_filename(info)
         filename = os.path.splitext(filename)[0] + ".mp3"
         return filename, info.get('title', None)
-
+        
 def embed_metadata(mp3_path, artist, album, cover_url, title):
     audio = EasyID3(mp3_path)
     audio['artist'] = artist or ""

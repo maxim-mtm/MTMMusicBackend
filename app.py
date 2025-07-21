@@ -6,6 +6,7 @@ import yt_dlp
 from mutagen.easyid3 import EasyID3
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, APIC
+import traceback
 
 app = Flask(__name__)
 
@@ -23,16 +24,21 @@ def fetch_deezer_metadata(track_title):
             cover_url = track['album']['cover_big']
             return artist, album, cover_url
     return None, None, None
-import shutil
 
 def download_audio_from_youtube(url, download_path):
-    # Copy cookies.txt to a temp path because /etc/secrets is read-only
-    temp_cookies_path = os.path.join(tempfile.gettempdir(), "cookies.txt")
-    shutil.copy("/etc/secrets/cookies.txt", temp_cookies_path)
+    # Write the cookie string from env to a file
+    cookies_env = os.environ.get("COOKIES_TXT_VAR")
+    if not cookies_env:
+        raise Exception("COOKIES_TXT_VAR environment variable is not set")
+
+    cookie_file_path = "/tmp/cookies.txt"
+    with open(cookie_file_path, "w") as f:
+        f.write(cookies_env)
 
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': download_path,
+        'cookiefile': cookie_file_path,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
@@ -40,7 +46,6 @@ def download_audio_from_youtube(url, download_path):
         }],
         'quiet': True,
         'no_warnings': True,
-        'cookiefile': temp_cookies_path  # ✅ use copied path
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -48,7 +53,7 @@ def download_audio_from_youtube(url, download_path):
         filename = ydl.prepare_filename(info)
         filename = os.path.splitext(filename)[0] + ".mp3"
         return filename, info.get('title', None)
-        
+
 def embed_metadata(mp3_path, artist, album, cover_url, title):
     audio = EasyID3(mp3_path)
     audio['artist'] = artist or ""
@@ -57,20 +62,23 @@ def embed_metadata(mp3_path, artist, album, cover_url, title):
     audio.save()
 
     if cover_url:
-        img_data = requests.get(cover_url).content
-        audio = MP3(mp3_path, ID3=ID3)
-        if audio.tags is None:
-            audio.add_tags()
-        audio.tags.add(
-            APIC(
-                encoding=3,
-                mime='image/jpeg',
-                type=3,
-                desc='Cover',
-                data=img_data
+        try:
+            img_data = requests.get(cover_url).content
+            audio = MP3(mp3_path, ID3=ID3)
+            if audio.tags is None:
+                audio.add_tags()
+            audio.tags.add(
+                APIC(
+                    encoding=3,
+                    mime='image/jpeg',
+                    type=3,
+                    desc='Cover',
+                    data=img_data
+                )
             )
-        )
-        audio.save()
+            audio.save()
+        except Exception as e:
+            print("Failed to embed cover art:", e)
 
 @app.route('/download', methods=['POST'])
 def download():
@@ -84,6 +92,7 @@ def download():
         try:
             mp3_file, video_title = download_audio_from_youtube(url, download_path)
         except Exception as e:
+            traceback.print_exc()
             return jsonify({"error": f"Failed to download audio: {str(e)}"}), 500
 
         artist, album, cover_url = fetch_deezer_metadata(video_title or "")

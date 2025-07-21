@@ -1,109 +1,61 @@
 import os
 import tempfile
-import requests
-from flask import Flask, request, send_file, jsonify
-import yt_dlp
-from mutagen.easyid3 import EasyID3
-from mutagen.mp3 import MP3
-from mutagen.id3 import ID3, APIC
-import traceback
+from flask import Flask, request, jsonify
+from yt_dlp import YoutubeDL
 
 app = Flask(__name__)
 
-DEEZER_SEARCH_URL = "https://api.deezer.com/search?q="
+# Optional: limit max file size (for safety on Render)
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB
 
-def fetch_deezer_metadata(track_title):
-    query = f"{track_title} lyrics"
-    response = requests.get(DEEZER_SEARCH_URL + query)
-    if response.status_code == 200:
-        data = response.json()
-        if data['data']:
-            track = data['data'][0]
-            artist = track['artist']['name']
-            album = track['album']['title']
-            cover_url = track['album']['cover_big']
-            return artist, album, cover_url
-    return None, None, None
+def write_cookies_to_tempfile():
+    cookies_content = os.getenv('COOKIES_TXT_VAR')
+    if not cookies_content:
+        raise Exception("Missing COOKIES_TXT_VAR environment variable")
 
-def download_audio_from_youtube(url, download_path):
-    # Write the cookie string from env to a file
-    cookies_env = os.environ.get("COOKIES_TXT_VAR")
-    if not cookies_env:
-        raise Exception("COOKIES_TXT_VAR environment variable is not set")
+    temp = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.txt')
+    temp.write(cookies_content)
+    temp.close()
+    return temp.name
 
-    cookie_file_path = "/tmp/cookies.txt"
-    with open(cookie_file_path, "w") as f:
-        f.write(cookies_env)
+def download_audio_from_youtube(url, output_path):
+    cookies_file = write_cookies_to_tempfile()
 
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': download_path,
-        'cookiefile': cookie_file_path,
+        'outtmpl': output_path,
+        'cookiefile': cookies_file,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
         'quiet': True,
-        'no_warnings': True,
+        'noplaylist': True
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        filename = os.path.splitext(filename)[0] + ".mp3"
-        return filename, info.get('title', None)
+        return output_path, info.get('title', 'Unknown Title')
 
-def embed_metadata(mp3_path, artist, album, cover_url, title):
-    audio = EasyID3(mp3_path)
-    audio['artist'] = artist or ""
-    audio['album'] = album or ""
-    audio['title'] = title or ""
-    audio.save()
-
-    if cover_url:
-        try:
-            img_data = requests.get(cover_url).content
-            audio = MP3(mp3_path, ID3=ID3)
-            if audio.tags is None:
-                audio.add_tags()
-            audio.tags.add(
-                APIC(
-                    encoding=3,
-                    mime='image/jpeg',
-                    type=3,
-                    desc='Cover',
-                    data=img_data
-                )
-            )
-            audio.save()
-        except Exception as e:
-            print("Failed to embed cover art:", e)
+@app.route('/')
+def home():
+    return 'Server is running.'
 
 @app.route('/download', methods=['POST'])
 def download():
-    data = request.json
+    data = request.get_json()
     url = data.get('url')
+
     if not url:
-        return jsonify({"error": "Missing 'url' parameter"}), 400
+        return jsonify({'error': 'Missing URL'}), 400
 
-    with tempfile.TemporaryDirectory() as tmpdirname:
-        download_path = os.path.join(tmpdirname, '%(title)s.%(ext)s')
-        try:
-            mp3_file, video_title = download_audio_from_youtube(url, download_path)
-        except Exception as e:
-            traceback.print_exc()
-            return jsonify({"error": f"Failed to download audio: {str(e)}"}), 500
-
-        artist, album, cover_url = fetch_deezer_metadata(video_title or "")
-
-        try:
-            embed_metadata(mp3_file, artist, album, cover_url, video_title)
-        except Exception as e:
-            print("Metadata embedding failed:", e)
-
-        return send_file(mp3_file, mimetype='audio/mpeg', as_attachment=True,
-                         download_name=f"{video_title or 'audio'}.mp3")
+    try:
+        output_file = tempfile.mktemp(suffix='.mp3')
+        file_path, title = download_audio_from_youtube(url, output_file)
+        return jsonify({'success': True, 'file': file_path, 'title': title})
+    except Exception as e:
+        return jsonify({'error': f'Failed to download audio: {str(e)}'}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
+    app.run(debug=True)

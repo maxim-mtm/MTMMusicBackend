@@ -23,7 +23,6 @@ def fetch_deezer_metadata(track_title):
             cover_url = track['album']['cover_big']
             return artist, album, cover_url
     return None, None, None
-
 def download_audio_from_youtube(url, download_path):
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -35,6 +34,7 @@ def download_audio_from_youtube(url, download_path):
         }],
         'quiet': True,
         'no_warnings': True,
+        'cookiefile': '/etc/secrets/cookies.txt' 
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
